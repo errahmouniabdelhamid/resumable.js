@@ -224,7 +224,7 @@ export default class ResumableChunk extends ResumableEventHandler {
         const uploadResult = this.livewireComponent.upload(
           this.livewireProperty,
           chunkFile,
-          (uploadedFilename) => {
+          (result) => {
             // Success callback
             ResumableHelpers.printDebugHigh(
               this.debugVerbosityLevel,
@@ -234,7 +234,7 @@ export default class ResumableChunk extends ResumableEventHandler {
             this.uploadPromise.isPending = false;
             this.uploadPromise.isSuccess = true;
             this.loaded = this.endByte - this.startByte;
-            this.fire('chunkSuccess', uploadedFilename);
+            this.fire('chunkSuccess', result);
           },
           (error) => {
             // Error callback
@@ -267,13 +267,15 @@ export default class ResumableChunk extends ResumableEventHandler {
           this.uploadPromise.cancel = uploadResult.cancel;
         }
       } catch (error) {
-        console.error('Error initiating Livewire upload:', error);
+        const errorMsg = `Error initiating Livewire upload for chunk ${this.offset + 1}/${this.fileObj.chunks.length} of file "${this.fileObj.fileName}": ${error.message}`;
+        console.error(errorMsg, error);
         this.handleUploadError(error);
       }
     } else {
       // Fallback: If no Livewire component is provided, show an error
-      console.error('No Livewire component provided for upload. Please set livewireComponent in options.');
-      this.fire('chunkError', 'No Livewire component provided');
+      const errorMsg = `No Livewire component provided for chunk upload (file: ${this.fileObj.fileName}, chunk: ${this.offset + 1}/${this.fileObj.chunks.length}). Please set livewireComponent in Resumable options using the @this or $wire reference from your Livewire component.`;
+      console.error(errorMsg);
+      this.fire('chunkError', errorMsg);
     }
 
     ResumableHelpers.printDebugLow(this.debugVerbosityLevel, 'Started upload of ResumableChunk.', this);
