@@ -7,6 +7,7 @@ namespace App\Traits;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Http\UploadedFile;
+use App\Traits\ChunkMetadata;
 
 /**
  * Trait HandlesResumableUploads
@@ -60,6 +61,22 @@ trait HandlesResumableUploads
      * Cache storage disk instance
      */
     private $storageDiskCache = null;
+
+    /**
+     * Customizable metadata keys for flexibility
+     * Override this in your component to use different parameter names
+     */
+    protected array $resumableMetadataKeys = [
+        'identifier' => 'resumableIdentifier',
+        'filename' => 'resumableFilename',
+        'chunkNumber' => 'resumableChunkNumber',
+        'totalChunks' => 'resumableTotalChunks',
+        'chunkSize' => 'resumableChunkSize',
+        'currentChunkSize' => 'resumableCurrentChunkSize',
+        'totalSize' => 'resumableTotalSize',
+        'type' => 'resumableType',
+        'relativePath' => 'resumableRelativePath',
+    ];
 
     /**
      * Check if a chunk exists (for resumability / chunk testing)
@@ -123,24 +140,14 @@ trait HandlesResumableUploads
      */
     public function updatedUpload(): void
     {
-        // Get chunk metadata from request
-        $metadata = $this->getChunkMetadata();
-
-        if (!$this->isValidChunkMetadata($metadata)) {
-            $this->handleInvalidChunk($metadata);
-            return;
-        }
-
-        $identifier = $metadata['resumableIdentifier'];
-        $originalFilename = $metadata['resumableFilename'];
-        $chunkNumber = (int) $metadata['resumableChunkNumber'];
-
         try {
+            // Parse metadata using type-safe DTO
+            $metadata = $this->getChunkMetadata();
+
             // Validate file size before proceeding
-            $totalSize = (int) ($metadata['resumableTotalSize'] ?? 0);
-            if ($totalSize > 0 && $this->maxUploadSize() && $totalSize > $this->maxUploadSize()) {
+            if ($metadata->totalSize > 0 && $this->maxUploadSize() && $metadata->totalSize > $this->maxUploadSize()) {
                 throw new \RuntimeException(
-                    "File '{$originalFilename}' exceeds maximum allowed size of " . 
+                    "File '{$metadata->filename}' exceeds maximum allowed size of " . 
                     $this->formatBytes($this->maxUploadSize())
                 );
             }
@@ -154,14 +161,14 @@ trait HandlesResumableUploads
                 
                 if ($finalPath) {
                     $this->completedUploads[] = [
-                        'original' => $originalFilename,
+                        'original' => $metadata->filename,
                         'path' => $finalPath,
                         'uploaded_at' => now(),
                     ];
 
                     // Call the hook if defined
                     if (method_exists($this, 'onUploadComplete')) {
-                        $this->onUploadComplete($finalPath, $originalFilename);
+                        $this->onUploadComplete($finalPath, $metadata->filename);
                     }
 
                     // Emit success event to JavaScript
@@ -175,46 +182,36 @@ trait HandlesResumableUploads
             // Reset upload property for next chunk
             $this->upload = null;
 
+        } catch (\InvalidArgumentException $e) {
+            // Handle validation errors from ChunkMetadata
+            $this->handleInvalidChunk($e);
         } catch (\Exception $e) {
-            $this->handleUploadError($e, $metadata, $chunkNumber);
+            $this->handleUploadError($e, null);
         }
     }
 
     /**
-     * Get chunk metadata from the request
+     * Get chunk metadata from the request as a type-safe DTO
+     * 
+     * @return ChunkMetadata
+     * @throws \InvalidArgumentException If metadata is invalid
      */
-    protected function getChunkMetadata(): array
+    protected function getChunkMetadata(): ChunkMetadata
     {
-        return request()->only([
-            'resumableChunkNumber',
-            'resumableTotalChunks',
-            'resumableIdentifier',
-            'resumableFilename',
-            'resumableChunkSize',
-            'resumableTotalSize',
-            'resumableCurrentChunkSize',
-            'resumableType',
-            'resumableRelativePath',
-        ]);
-    }
-
-    /**
-     * Validate chunk metadata
-     */
-    protected function isValidChunkMetadata(array $metadata): bool
-    {
-        return !empty($metadata['resumableIdentifier']) &&
-               !empty($metadata['resumableFilename']) &&
-               !empty($metadata['resumableChunkNumber']) &&
-               !empty($metadata['resumableTotalChunks']);
+        $requestData = request()->only(array_values($this->resumableMetadataKeys));
+        return ChunkMetadata::fromRequest($requestData, $this->resumableMetadataKeys);
     }
 
     /**
      * Save a chunk to storage
      */
-    protected function saveChunk(UploadedFile $file, array $metadata): void
+    protected function saveChunk(UploadedFile $file, ChunkMetadata $metadata): void
     {
-        $chunkPath = $this->getChunkPath($metadata);
+        $chunkPath = $this->buildChunkPath(
+            $metadata->identifier,
+            $metadata->filename,
+            $metadata->chunkNumber
+        );
         
         $this->disk()->put(
             $chunkPath,
@@ -225,14 +222,10 @@ trait HandlesResumableUploads
     /**
      * Check if all chunks have been uploaded
      */
-    protected function isUploadComplete(array $metadata): bool
+    protected function isUploadComplete(ChunkMetadata $metadata): bool
     {
-        $identifier = $metadata['resumableIdentifier'];
-        $filename = $metadata['resumableFilename'];
-        $totalChunks = (int) $metadata['resumableTotalChunks'];
-
-        for ($i = 1; $i <= $totalChunks; $i++) {
-            if (!$this->chunkExists($identifier, $filename, $i)) {
+        for ($i = 1; $i <= $metadata->totalChunks; $i++) {
+            if (!$this->chunkExists($metadata->identifier, $metadata->filename, $i)) {
                 return false;
             }
         }
@@ -301,14 +294,10 @@ trait HandlesResumableUploads
     /**
      * Assemble all chunks into final file using streaming for memory efficiency
      */
-    protected function assembleChunks(array $metadata): ?string
+    protected function assembleChunks(ChunkMetadata $metadata): ?string
     {
-        $identifier = $metadata['resumableIdentifier'];
-        $filename = $metadata['resumableFilename'];
-        $totalChunks = (int) $metadata['resumableTotalChunks'];
-
         // Create safe filename
-        $safeFilename = $this->sanitizeFilename($filename);
+        $safeFilename = $metadata->getSafeFilename();
         $finalPath = $this->resumableUploadFolder . '/' . $safeFilename;
 
         // Check if file already exists
@@ -329,14 +318,14 @@ trait HandlesResumableUploads
             }
 
             // Stream each chunk directly to the final file
-            for ($i = 1; $i <= $totalChunks; $i++) {
-                $chunkPath = $this->buildChunkPath($identifier, $filename, $i);
+            for ($i = 1; $i <= $metadata->totalChunks; $i++) {
+                $chunkPath = $this->buildChunkPath($metadata->identifier, $metadata->filename, $i);
                 
                 if (!$disk->exists($chunkPath)) {
                     fclose($writeStream);
                     $disk->delete($tempPath);
                     throw new \RuntimeException(
-                        "Chunk {$i} missing for file '{$filename}' (identifier: {$identifier})"
+                        "Chunk {$i} missing for file '{$metadata->filename}' (identifier: {$metadata->identifier})"
                     );
                 }
                 
@@ -345,7 +334,7 @@ trait HandlesResumableUploads
                     fclose($writeStream);
                     $disk->delete($tempPath);
                     throw new \RuntimeException(
-                        "Failed to read chunk {$i} for file '{$filename}' (identifier: {$identifier})"
+                        "Failed to read chunk {$i} for file '{$metadata->filename}' (identifier: {$metadata->identifier})"
                     );
                 }
                 
@@ -367,7 +356,7 @@ trait HandlesResumableUploads
         }
 
         // Clean up chunks - delete entire directory at once
-        $this->cleanupChunks($identifier);
+        $this->cleanupChunks($metadata->identifier);
 
         return $finalPath;
     }
@@ -391,18 +380,6 @@ trait HandlesResumableUploads
                 'error' => $e->getMessage(),
             ]);
         }
-    }
-
-    /**
-     * Get chunk path from metadata
-     */
-    protected function getChunkPath(array $metadata): string
-    {
-        return $this->buildChunkPath(
-            $metadata['resumableIdentifier'],
-            $metadata['resumableFilename'],
-            (int) $metadata['resumableChunkNumber']
-        );
     }
 
     /**
@@ -438,29 +415,31 @@ trait HandlesResumableUploads
     /**
      * Handle invalid chunk metadata
      */
-    protected function handleInvalidChunk(array $metadata): void
+    protected function handleInvalidChunk(\InvalidArgumentException $e): void
     {
         if (method_exists($this, 'onUploadError')) {
-            $this->onUploadError(new \InvalidArgumentException('Invalid chunk metadata'));
+            $this->onUploadError($e);
         }
 
         $this->dispatch('upload:error', [
-            'message' => 'Invalid chunk metadata',
+            'message' => $e->getMessage(),
+        ]);
+
+        Log::error('Invalid chunk metadata', [
+            'error' => $e->getMessage(),
+            'trace' => $e->getTraceAsString(),
         ]);
     }
 
     /**
      * Handle upload errors with better context
      */
-    protected function handleUploadError(\Exception $e, array $metadata, int $chunkNumber = null): void
+    protected function handleUploadError(\Exception $e, ?ChunkMetadata $metadata = null): void
     {
-        $identifier = $metadata['resumableIdentifier'] ?? 'unknown';
-        $filename = $metadata['resumableFilename'] ?? 'unknown';
-        
         $errorContext = [
-            'identifier' => $identifier,
-            'filename' => $filename,
-            'chunk' => $chunkNumber,
+            'identifier' => $metadata?->identifier ?? 'unknown',
+            'filename' => $metadata?->filename ?? 'unknown',
+            'chunk' => $metadata?->chunkNumber,
             'error' => $e->getMessage(),
         ];
 
@@ -474,7 +453,7 @@ trait HandlesResumableUploads
         ]);
 
         Log::error('Resumable upload error', array_merge($errorContext, [
-            'metadata' => $metadata,
+            'metadata' => $metadata?->toArray(),
             'trace' => $e->getTraceAsString(),
         ]));
     }

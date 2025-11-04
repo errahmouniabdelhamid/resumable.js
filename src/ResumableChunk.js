@@ -26,6 +26,10 @@ export default class ResumableChunk extends ResumableEventHandler {
     this.endByte = Math.min(this.fileObjSize, (this.offset + 1) * this.chunkSize);
     this.uploadPromise = null;
     
+    // Cache the chunk blob for reuse (optimization #11)
+    this._cachedChunkBlob = null;
+    this._cachedChunkFile = null;
+    
     ResumableHelpers.printDebugLow(this.debugVerbosityLevel, 'Constructed ResumableChunk.', this);
   }
 
@@ -166,6 +170,31 @@ export default class ResumableChunk extends ResumableEventHandler {
   }
 
   /**
+   * Get or create cached chunk blob (optimization #11 - chunk reuse)
+   */
+  getChunkFile() {
+    if (!this._cachedChunkFile) {
+      // Create the chunk blob only once
+      const bytes = this.fileObj.file.slice(this.startByte, this.endByte,
+        this.setChunkTypeFromFile ? this.fileObj.file.type : '');
+
+      // Cache the blob
+      this._cachedChunkBlob = bytes;
+
+      // Create a File object with metadata
+      const chunkFileName = `${this.fileObj.fileName}.chunk.${this.offset + 1}`;
+      this._cachedChunkFile = new File([bytes], chunkFileName, {
+        type: this.setChunkTypeFromFile ? this.fileObj.file.type : 'application/octet-stream'
+      });
+
+      // Add metadata as a property (Livewire will send this along with the file)
+      this._cachedChunkFile.metadata = this.formattedQuery;
+    }
+    
+    return this._cachedChunkFile;
+  }
+
+  /**
    * Uploads the actual data using Livewire's upload functionality
    */
   send() {
@@ -187,18 +216,8 @@ export default class ResumableChunk extends ResumableEventHandler {
 
     ResumableHelpers.printDebugLow(this.debugVerbosityLevel, 'Starting upload of ResumableChunk...', this);
 
-    // Create the chunk blob
-    let bytes = this.fileObj.file.slice(this.startByte, this.endByte,
-      this.setChunkTypeFromFile ? this.fileObj.file.type : '');
-
-    // Create a File object with metadata
-    const chunkFileName = `${this.fileObj.fileName}.chunk.${this.offset + 1}`;
-    const chunkFile = new File([bytes], chunkFileName, {
-      type: this.setChunkTypeFromFile ? this.fileObj.file.type : 'application/octet-stream'
-    });
-
-    // Add metadata as a property (Livewire will send this along with the file)
-    chunkFile.metadata = this.formattedQuery;
+    // Get cached chunk file (reused on retries - optimization #11)
+    const chunkFile = this.getChunkFile();
 
     this.loaded = 0;
     this.pendingRetry = false;
@@ -285,12 +304,17 @@ Current file: "${this.fileObj.fileName}" (chunk ${this.offset + 1}/${this.fileOb
           this.handleUploadError(error);
         },
         (event) => {
-          // Progress callback
+          // Progress callback with throttling (optimization #12)
           if (event.detail && event.detail.progress !== undefined) {
             const progress = event.detail.progress;
             this.loaded = Math.floor((this.endByte - this.startByte) * progress / 100);
             
-            if (Date.now() - this.lastProgressCallback.getTime() > this.throttleProgressCallbacks * 1000) {
+            // Throttle progress callbacks to avoid excessive event firing
+            const now = Date.now();
+            const timeSinceLastCallback = now - this.lastProgressCallback.getTime();
+            const throttleMs = this.throttleProgressCallbacks * 1000;
+            
+            if (timeSinceLastCallback > throttleMs) {
               this.fire('chunkProgress', this.message());
               this.lastProgressCallback = new Date();
             }

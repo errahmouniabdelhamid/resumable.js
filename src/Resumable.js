@@ -23,40 +23,43 @@ export class Resumable extends ResumableEventHandler {
       drop: this.removeDragOverClassAndCallOnDrop.bind(this)
     };
     
-    // Set default configuration
-    this.clearInput = true;
-    this.dragOverClass = 'dragover';
-    this.fileCategories = [];
-    this.defaultFileCategory = 'default';
-    this.fileTypes = [];
-    this.fileTypeErrorCallback = (file) => {
-      alert(`${file.fileName || file.name} has an unsupported file type.`);
+    // Define default configuration (optimization #18 - use object spread)
+    const defaults = {
+      clearInput: true,
+      dragOverClass: 'dragover',
+      fileCategories: [],
+      defaultFileCategory: 'default',
+      fileTypes: [],
+      fileTypeErrorCallback: (file) => {
+        alert(`${file.fileName || file.name} has an unsupported file type.`);
+      },
+      generateUniqueIdentifier: null,
+      maxFileSize: undefined,
+      maxFileSizeErrorCallback: (file) => {
+        alert(file.fileName || file.name + ' is too large, please upload files less than ' +
+          ResumableHelpers.formatSize(this.maxFileSize) + '.');
+      },
+      maxFiles: undefined,
+      maxFilesErrorCallback: (files) => {
+        alert('Please upload no more than ' + this.maxFiles + ' file' + (this.maxFiles === 1 ? '' : 's') + ' at a time.');
+      },
+      minFileSize: 1,
+      minFileSizeErrorCallback: (file) => {
+        alert(file.fileName || file.name + ' is too small, please upload files larger than ' +
+          ResumableHelpers.formatSize(this.minFileSize) + '.');
+      },
+      prioritizeFirstAndLastChunk: false,
+      fileValidationErrorCallback: (file) => {},
+      simultaneousUploads: 3,
+      debugVerbosityLevel: DebugVerbosityLevel.NONE,
+      
+      // Livewire-specific configuration
+      livewireComponent: null,
+      livewireProperty: 'upload',
     };
-    this.generateUniqueIdentifier = null;
-    this.maxFileSize = undefined;
-    this.maxFileSizeErrorCallback = (file) => {
-      alert(file.fileName || file.name + ' is too large, please upload files less than ' +
-        ResumableHelpers.formatSize(this.maxFileSize) + '.');
-    };
-    this.maxFiles = undefined;
-    this.maxFilesErrorCallback = (files) => {
-      alert('Please upload no more than ' + this.maxFiles + ' file' + (this.maxFiles === 1 ? '' : 's') + ' at a time.');
-    };
-    this.minFileSize = 1;
-    this.minFileSizeErrorCallback = (file) => {
-      alert(file.fileName || file.name + ' is too small, please upload files larger than ' +
-        ResumableHelpers.formatSize(this.minFileSize) + '.');
-    };
-    this.prioritizeFirstAndLastChunk = false;
-    this.fileValidationErrorCallback = (file) => {};
-    this.simultaneousUploads = 3;
-    this.debugVerbosityLevel = DebugVerbosityLevel.NONE;
     
-    // Livewire-specific configuration
-    this.livewireComponent = null;
-    this.livewireProperty = 'upload';
-    
-    this.setInstanceProperties(options);
+    // Apply defaults, then override with user options using spread (optimization #18)
+    this.setInstanceProperties({...defaults, ...options});
     this.checkSupport();
     ResumableHelpers.printDebugLow(this.debugVerbosityLevel, 'Constructed Resumable.', this);
   }
