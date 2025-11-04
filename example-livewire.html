@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Resumable.js - Livewire Edition Example</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+        }
+        
+        .upload-area {
+            border: 2px dashed #ccc;
+            border-radius: 8px;
+            padding: 40px;
+            text-align: center;
+            background-color: #f9f9f9;
+            margin: 20px 0;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        
+        .upload-area:hover {
+            border-color: #4CAF50;
+            background-color: #f0f8f0;
+        }
+        
+        .upload-area.dragover {
+            border-color: #4CAF50;
+            background-color: #e8f5e9;
+            transform: scale(1.02);
+        }
+        
+        .btn {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 5px;
+        }
+        
+        .btn:hover {
+            background-color: #45a049;
+        }
+        
+        .btn-secondary {
+            background-color: #008CBA;
+        }
+        
+        .btn-danger {
+            background-color: #f44336;
+        }
+        
+        .file-list {
+            margin-top: 20px;
+        }
+        
+        .file-item {
+            background-color: #f0f0f0;
+            padding: 15px;
+            margin: 10px 0;
+            border-radius: 4px;
+            border-left: 4px solid #4CAF50;
+        }
+        
+        .progress-bar {
+            width: 100%;
+            height: 20px;
+            background-color: #ddd;
+            border-radius: 10px;
+            overflow: hidden;
+            margin-top: 10px;
+        }
+        
+        .progress-fill {
+            height: 100%;
+            background-color: #4CAF50;
+            transition: width 0.3s ease;
+            text-align: center;
+            line-height: 20px;
+            color: white;
+            font-size: 12px;
+        }
+        
+        .status {
+            margin-top: 10px;
+            padding: 10px;
+            border-radius: 4px;
+        }
+        
+        .status.success {
+            background-color: #d4edda;
+            color: #155724;
+        }
+        
+        .status.error {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+        
+        .status.info {
+            background-color: #d1ecf1;
+            color: #0c5460;
+        }
+    </style>
+</head>
+<body>
+    <h1>Resumable.js - Livewire Edition</h1>
+    <p>Upload files in chunks using Livewire v3 native upload functionality</p>
+    
+    <div class="upload-area" id="dropZone">
+        <h3>Drop files here or click to browse</h3>
+        <p>Supports drag & drop, multiple files, and chunked uploads</p>
+        <button class="btn" id="browseButton">Select Files</button>
+    </div>
+    
+    <div class="controls">
+        <button class="btn" id="uploadButton" disabled>Start Upload</button>
+        <button class="btn btn-secondary" id="pauseButton" disabled>Pause</button>
+        <button class="btn btn-danger" id="cancelButton" disabled>Cancel</button>
+    </div>
+    
+    <div class="file-list" id="fileList"></div>
+    
+    <div id="statusArea"></div>
+
+    <!-- Include Livewire -->
+    <script src="https://cdn.jsdelivr.net/npm/@livewire/livewire@3.x/dist/livewire.js"></script>
+    
+    <!-- Include Resumable.js (Livewire Edition) -->
+    <script type="module">
+        import Resumable from './dist/resumable-livewire.es.js';
+        
+        // Note: In a real Livewire application, you would get the component reference from Livewire
+        // For this example, we'll create a mock component that simulates Livewire's upload API
+        
+        class MockLivewireComponent {
+            upload(property, file, successCallback, errorCallback, progressCallback) {
+                console.log('Mock Livewire upload:', property, file);
+                
+                // Simulate upload progress
+                let progress = 0;
+                const interval = setInterval(() => {
+                    progress += 10;
+                    
+                    if (progressCallback) {
+                        progressCallback({
+                            detail: {
+                                progress: progress
+                            }
+                        });
+                    }
+                    
+                    if (progress >= 100) {
+                        clearInterval(interval);
+                        if (successCallback) {
+                            successCallback(file.name);
+                        }
+                    }
+                }, 200);
+                
+                // Return an object with cancel function
+                return {
+                    cancel: () => {
+                        clearInterval(interval);
+                        if (errorCallback) {
+                            errorCallback(new Error('Upload cancelled'));
+                        }
+                    }
+                };
+            }
+        }
+        
+        // Create a mock Livewire component
+        const mockComponent = new MockLivewireComponent();
+        
+        // Initialize Resumable with Livewire configuration
+        const resumable = new Resumable({
+            livewireComponent: mockComponent,
+            livewireProperty: 'fileUpload',
+            chunkSize: 1024 * 1024, // 1MB chunks
+            simultaneousUploads: 3,
+            testChunks: false, // Disable test chunks for this example
+            maxFileSize: 100 * 1024 * 1024, // 100MB max
+            maxFiles: undefined, // No limit
+            fileTypes: [], // Accept all file types
+            debugVerbosityLevel: 1, // Show debug messages
+        });
+        
+        // Assign browse and drop
+        resumable.assignBrowse(document.getElementById('browseButton'));
+        resumable.assignDrop(document.getElementById('dropZone'));
+        
+        // DOM elements
+        const fileListEl = document.getElementById('fileList');
+        const statusAreaEl = document.getElementById('statusArea');
+        const uploadButton = document.getElementById('uploadButton');
+        const pauseButton = document.getElementById('pauseButton');
+        const cancelButton = document.getElementById('cancelButton');
+        
+        // Helper functions
+        function showStatus(message, type = 'info') {
+            const statusDiv = document.createElement('div');
+            statusDiv.className = `status ${type}`;
+            statusDiv.textContent = message;
+            statusAreaEl.innerHTML = '';
+            statusAreaEl.appendChild(statusDiv);
+            
+            setTimeout(() => {
+                statusDiv.remove();
+            }, 5000);
+        }
+        
+        function updateFileDisplay() {
+            fileListEl.innerHTML = '';
+            
+            const files = resumable.getFilesOfAllCategories ? 
+                resumable.getFilesOfAllCategories() : [];
+            
+            files.forEach(file => {
+                const fileDiv = document.createElement('div');
+                fileDiv.className = 'file-item';
+                fileDiv.id = `file-${file.uniqueIdentifier}`;
+                
+                const progress = Math.round(file.progress() * 100);
+                
+                fileDiv.innerHTML = `
+                    <div><strong>${file.fileName}</strong> (${formatFileSize(file.size)})</div>
+                    <div class="progress-bar">
+                        <div class="progress-fill" style="width: ${progress}%">${progress}%</div>
+                    </div>
+                `;
+                
+                fileListEl.appendChild(fileDiv);
+            });
+            
+            // Update buttons
+            const hasFiles = files.length > 0;
+            uploadButton.disabled = !hasFiles || resumable.isUploading;
+            pauseButton.disabled = !resumable.isUploading;
+            cancelButton.disabled = !hasFiles;
+        }
+        
+        function formatFileSize(bytes) {
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+            if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+            return (bytes / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
+        }
+        
+        // Event listeners
+        resumable.on('fileAdded', (file) => {
+            console.log('File added:', file.fileName);
+            showStatus(`File added: ${file.fileName}`, 'success');
+            updateFileDisplay();
+        });
+        
+        resumable.on('filesAdded', (files) => {
+            console.log('Files added:', files.length);
+            showStatus(`${files.length} file(s) added`, 'success');
+        });
+        
+        resumable.on('fileProgress', (file) => {
+            const progress = Math.round(file.progress() * 100);
+            const fileEl = document.getElementById(`file-${file.uniqueIdentifier}`);
+            if (fileEl) {
+                const progressFill = fileEl.querySelector('.progress-fill');
+                if (progressFill) {
+                    progressFill.style.width = progress + '%';
+                    progressFill.textContent = progress + '%';
+                }
+            }
+        });
+        
+        resumable.on('fileSuccess', (file, message) => {
+            console.log('File uploaded successfully:', file.fileName);
+            showStatus(`File uploaded: ${file.fileName}`, 'success');
+            updateFileDisplay();
+        });
+        
+        resumable.on('fileError', (file, message) => {
+            console.error('File upload error:', file.fileName, message);
+            showStatus(`Error uploading ${file.fileName}: ${message}`, 'error');
+        });
+        
+        resumable.on('complete', () => {
+            console.log('All files uploaded!');
+            showStatus('All files uploaded successfully!', 'success');
+            updateFileDisplay();
+        });
+        
+        resumable.on('progress', () => {
+            const overallProgress = Math.round(resumable.progress() * 100);
+            console.log('Overall progress:', overallProgress + '%');
+        });
+        
+        // Button handlers
+        uploadButton.addEventListener('click', () => {
+            resumable.upload();
+            showStatus('Upload started...', 'info');
+            updateFileDisplay();
+        });
+        
+        pauseButton.addEventListener('click', () => {
+            resumable.pause();
+            showStatus('Upload paused', 'info');
+            updateFileDisplay();
+        });
+        
+        cancelButton.addEventListener('click', () => {
+            resumable.cancel();
+            showStatus('Upload cancelled', 'info');
+            updateFileDisplay();
+        });
+        
+        // Initial display
+        updateFileDisplay();
+        
+        console.log('Resumable.js (Livewire Edition) initialized');
+        showStatus('Ready to upload files', 'info');
+    </script>
+</body>
+</html>
