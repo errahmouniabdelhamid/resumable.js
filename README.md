@@ -1,3 +1,9 @@
+## Resumable.js - Livewire Edition
+
+🎉 **NEW**: This fork now includes a **Livewire v3 edition** that uses Laravel Livewire's native upload functionality instead of XHR! See [README-LIVEWIRE.md](README-LIVEWIRE.md) for details.
+
+---
+
 ## Who created Resumable.js?
 The original library was developed and maintained mainly by [Steffen Fagerström Christensen](https://github.com/steffentchr) of [23](https://github.com/23).  
 [Point Cloud Technology](https://github.com/pointcloudtechnology) (PCT) forked the original repo on Sep 24, 2020. Any development/changes in this repo from this point on was done by PCT and possibly other contributors via PRs.  
@@ -7,6 +13,10 @@ Big thanks to Steffen and 23 for providing us with this awesome piece of softwar
 
 Resumable.js is a JavaScript library providing multiple simultaneous, stable and resumable uploads via the [`HTML5 File API`](http://www.w3.org/TR/FileAPI/).
 
+**This repository contains two versions:**
+1. **Original XHR version** (TypeScript) - Uses traditional XMLHttpRequest for uploads
+2. **Livewire edition** (JavaScript) - Uses Laravel Livewire v3's native upload API ([Documentation](README-LIVEWIRE.md))
+
 The library is designed to introduce fault-tolerance into the upload of large files through HTTP. This is done by splitting each file into small chunks. Then, whenever the upload of a chunk fails, uploading is retried until the procedure completes. This allows uploads to automatically resume uploading after a network connection is lost either locally or to the server. Additionally, it allows for users to pause, resume and even recover uploads without losing state because only the currently uploading chunks will be aborted, not the entire upload.
 
 Resumable.js does not have any external dependencies other than the `HTML5 File API`. This is relied on for the ability to chunk files into smaller pieces. Currently, this means that support is widely available.  
@@ -15,6 +25,19 @@ Firefox 47+, Chrome 54+, Edge 14+, Safari 10.1 (all released around 2017) should
 
 Examples are available in the `samples/` folder. Feel free to update the existing examples or add your own (via pull requests) to help document the project.  
 (Some examples might be outdated, but should give an overview for how to work with this package. In general they should still work, but might not use newer/updated functionality. We'll try to go through the examples and update them as soon as possible (see issue #12), but this doesn't have a high priority right now.)
+
+For the **Livewire edition**, see `example-livewire.html` for a complete working example.
+
+## Building
+
+**Livewire Edition (JavaScript):**
+```bash
+npm install
+npm run build  # Creates dist/resumable-livewire.es.js and .umd.js
+```
+
+**Original XHR Version (TypeScript):**
+The original TypeScript version can still be built using webpack (see legacy build instructions in git history).
 
 ## How can I use it?
 
