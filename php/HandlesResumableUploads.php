@@ -57,6 +57,81 @@ trait HandlesResumableUploads
     protected array $completedUploads = [];
 
     /**
+     * Track cancelled uploads (identifier => true)
+     */
+    protected array $cancelledUploads = [];
+
+    /**
+     * Check if a chunk exists (for resumability / chunk testing)
+     * 
+     * This method is called from JavaScript to check if a chunk already exists
+     * before attempting to upload it. Essential for resumability.
+     * 
+     * @param string $identifier Unique upload identifier
+     * @param string $filename Original filename
+     * @param int $chunkNumber Chunk number (1-indexed)
+     * @return bool True if chunk exists
+     */
+    public function checkChunk(string $identifier, string $filename, int $chunkNumber): bool
+    {
+        // Check if upload was cancelled
+        if (isset($this->cancelledUploads[$identifier])) {
+            return false;
+        }
+
+        return $this->chunkExists($identifier, $filename, $chunkNumber);
+    }
+
+    /**
+     * Cancel an upload and clean up its chunks
+     * 
+     * This method handles user cancellation of uploads. It marks the upload as cancelled
+     * and cleans up any existing chunks.
+     * 
+     * @param string $identifier Unique upload identifier
+     * @param string $filename Original filename
+     * @return void
+     */
+    public function cancelUpload(string $identifier, string $filename): void
+    {
+        // Mark as cancelled
+        $this->cancelledUploads[$identifier] = true;
+
+        // Get total chunks if we can determine it
+        $chunkDir = $this->getChunkDirectory($identifier);
+        
+        try {
+            // Get all chunk files for this upload
+            $files = Storage::disk($this->resumableDisk)->files($chunkDir);
+            
+            // Delete each chunk
+            foreach ($files as $file) {
+                Storage::disk($this->resumableDisk)->delete($file);
+            }
+            
+            // Delete the directory
+            Storage::disk($this->resumableDisk)->deleteDirectory($chunkDir);
+            
+        } catch (\Exception $e) {
+            Log::error('Error cancelling upload', [
+                'identifier' => $identifier,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        // Call the hook if defined
+        if (method_exists($this, 'onUploadCancelled')) {
+            $this->onUploadCancelled($identifier, $filename);
+        }
+
+        // Emit cancelled event to JavaScript
+        $this->dispatch('upload:cancelled', [
+            'identifier' => $identifier,
+            'filename' => $filename,
+        ]);
+    }
+
+    /**
      * Process uploaded chunk automatically
      * 
      * This method is called automatically by Livewire when the upload property changes
@@ -68,6 +143,17 @@ trait HandlesResumableUploads
 
         if (!$this->isValidChunkMetadata($metadata)) {
             $this->handleInvalidChunk($metadata);
+            return;
+        }
+
+        // Check if upload was cancelled
+        $identifier = $metadata['resumableIdentifier'];
+        if (isset($this->cancelledUploads[$identifier])) {
+            $this->upload = null;
+            $this->dispatch('upload:cancelled', [
+                'identifier' => $identifier,
+                'message' => 'Upload was cancelled',
+            ]);
             return;
         }
 

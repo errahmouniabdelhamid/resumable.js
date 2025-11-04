@@ -76,6 +76,17 @@ class SimpleFileUploader extends Component
     }
 
     /**
+     * Hook: Called when upload is cancelled (optional)
+     */
+    protected function onUploadCancelled(string $identifier, string $filename): void
+    {
+        $this->dispatch('notification', [
+            'type' => 'info',
+            'message' => "Upload of '{$filename}' was cancelled",
+        ]);
+    }
+
+    /**
      * Remove an uploaded file
      */
     public function removeFile(int $index): void

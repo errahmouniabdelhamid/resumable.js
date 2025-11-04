@@ -11,6 +11,8 @@ This trait provides the **simplest possible integration** for resumable uploads:
 ✅ **Minimal Code** - Just add the trait and define hooks  
 ✅ **Event-Driven** - Uses Livewire's native event system  
 ✅ **Flexible** - Easy to customize and extend  
+✅ **Resumability** - Checks existing chunks before uploading  
+✅ **Cancellation** - Handles user cancellation with cleanup  
 
 ## Quick Start
 
@@ -93,10 +95,12 @@ The trait automatically:
 
 1. **Receives chunks** via the `updatedUpload()` lifecycle hook
 2. **Stores chunks** temporarily in the configured storage disk
-3. **Checks completion** after each chunk is uploaded
-4. **Assembles chunks** into the final file when all chunks are received
-5. **Cleans up** temporary chunk files
-6. **Calls your hooks** to notify you of completion or errors
+3. **Checks for existing chunks** (enables resumability after network interruptions)
+4. **Checks completion** after each chunk is uploaded
+5. **Assembles chunks** into the final file when all chunks are received
+6. **Cleans up** temporary chunk files
+7. **Handles cancellation** - Cleans up chunks when user cancels
+8. **Calls your hooks** to notify you of completion, errors, or cancellation
 
 ### Flow Diagram
 
@@ -195,6 +199,52 @@ protected function onUploadError(\Exception $e): void
 }
 ```
 
+#### `onUploadCancelled(string $identifier, string $filename): void` (Optional)
+
+Called when a user cancels an upload.
+
+```php
+protected function onUploadCancelled(string $identifier, string $filename): void
+{
+    Log::info('Upload cancelled', [
+        'user' => auth()->id(),
+        'identifier' => $identifier,
+        'filename' => $filename,
+    ]);
+
+    $this->dispatch('notification', [
+        'message' => "Upload of {$filename} was cancelled"
+    ]);
+}
+```
+
+## Public Methods
+
+The trait provides these public methods you can call:
+
+#### `checkChunk(string $identifier, string $filename, int $chunkNumber): bool`
+
+Check if a specific chunk exists. Essential for resumability - allows resumable.js to skip chunks that are already uploaded.
+
+```php
+// Called automatically by JavaScript for chunk testing
+// Can also be called manually:
+if ($this->checkChunk('unique-id', 'file.pdf', 1)) {
+    // Chunk 1 already exists
+}
+```
+
+#### `cancelUpload(string $identifier, string $filename): void`
+
+Cancel an upload and clean up all its chunks. Useful for implementing cancel buttons.
+
+```php
+public function cancelCurrentUpload()
+{
+    $this->cancelUpload($this->currentIdentifier, $this->currentFilename);
+}
+```
+
 ## JavaScript Events
 
 The trait dispatches Livewire events that you can listen to:
@@ -210,6 +260,11 @@ window.addEventListener('upload:complete', (event) => {
 window.addEventListener('upload:error', (event) => {
     console.error('Error:', event.detail.message);
     alert('Upload failed: ' + event.detail.message);
+});
+
+// Listen for upload cancellation
+window.addEventListener('upload:cancelled', (event) => {
+    console.log('Upload cancelled:', event.detail.identifier);
 });
 ```
 
@@ -331,12 +386,115 @@ class ImageUploader extends Component
 }
 ```
 
+### Example 4: With Cancellation Support
+
+```php
+class CancellableUploader extends Component
+{
+    use WithFileUploads, HandlesResumableUploads;
+
+    public $upload;
+    public $currentIdentifier;
+    public $currentFilename;
+    public $isUploading = false;
+
+    protected function onUploadComplete(string $filepath, string $originalFilename): void
+    {
+        $this->isUploading = false;
+        $this->currentIdentifier = null;
+        $this->currentFilename = null;
+        
+        $this->dispatch('notification', [
+            'message' => "Upload complete: {$originalFilename}"
+        ]);
+    }
+
+    protected function onUploadCancelled(string $identifier, string $filename): void
+    {
+        $this->isUploading = false;
+        
+        $this->dispatch('notification', [
+            'message' => "Upload cancelled: {$filename}"
+        ]);
+    }
+
+    public function cancelCurrentUpload()
+    {
+        if ($this->currentIdentifier && $this->currentFilename) {
+            $this->cancelUpload($this->currentIdentifier, $this->currentFilename);
+        }
+    }
+
+    public function render()
+    {
+        return view('livewire.cancellable-uploader');
+    }
+}
+```
+
+## Resumability & Cancellation
+
+### How Resumability Works
+
+The trait automatically handles resumability by:
+
+1. **Chunk Checking**: Before uploading a chunk, resumable.js can call `checkChunk()` to see if it already exists
+2. **Skip Uploaded**: If a chunk exists, it's skipped (saves bandwidth and time)
+3. **Resume After Interruption**: If connection drops, already-uploaded chunks are detected and skipped
+4. **Persistent Storage**: Chunks remain in storage until all chunks arrive or upload is cancelled
+
+**Enable chunk testing in JavaScript:**
+```javascript
+const resumable = new Resumable({
+    livewireComponent: @this,
+    livewireProperty: 'upload',
+    testChunks: true, // Enable chunk checking for resumability
+});
+```
+
+### Handling Cancellation
+
+Users can cancel uploads at any time. The trait handles this gracefully:
+
+```php
+// In your component
+public function cancelMyUpload()
+{
+    $this->cancelUpload($uploadIdentifier, $filename);
+    // This will:
+    // 1. Mark upload as cancelled
+    // 2. Delete all existing chunks
+    // 3. Clean up the chunk directory
+    // 4. Call onUploadCancelled() hook
+    // 5. Emit 'upload:cancelled' event
+}
+```
+
+**JavaScript side:**
+```javascript
+// Cancel button handler
+document.getElementById('cancel-btn').addEventListener('click', () => {
+    // Cancel on JavaScript side (stops new chunks)
+    resumable.cancel();
+    
+    // Cancel on server side (cleans up chunks)
+    @this.call('cancelMyUpload');
+});
+
+// Listen for cancellation
+window.addEventListener('upload:cancelled', (e) => {
+    console.log('Upload cancelled:', e.detail.identifier);
+});
+```
+
 ## Trait Methods
 
 The trait provides these protected methods you can use:
 
 | Method | Description |
 |--------|-------------|
+| `checkChunk($identifier, $filename, $chunkNumber)` | **Public**: Check if chunk exists (resumability) |
+| `cancelUpload($identifier, $filename)` | **Public**: Cancel upload and cleanup |
 | `getChunkMetadata()` | Get chunk metadata from the request |
 | `isValidChunkMetadata($metadata)` | Validate chunk metadata |
 | `saveChunk($file, $metadata)` | Save a chunk to storage |
