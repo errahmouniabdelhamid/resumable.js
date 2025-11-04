@@ -46,7 +46,7 @@ app.get('/upload', function(req, res) {
 app.get('/download/:identifier', function(req, res) {
   resumable.write(req.params.identifier, res);
 });
-app.get('/js/:filename', function(req, res) {
+app.get('/src/:filename', function(req, res) {
   var fs = require('fs');
   res.setHeader('content-type', 'application/javascript');
   fs.createReadStream('../../dist/' + req.params.filename).pipe(res);

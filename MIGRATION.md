@@ -34,7 +34,7 @@ const resumable = new Resumable({
 - Outputs `dist/main.js` and `dist/helpers.js`
 
 **Livewire Edition:**
-- JavaScript source files in `js/`
+- JavaScript source files in `src/`
 - Outputs `dist/resumable-livewire.es.js` (ES modules) and `dist/resumable-livewire.umd.js` (UMD)
 
 ## What Stays the Same

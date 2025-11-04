@@ -4,7 +4,7 @@ import { resolve } from 'path';
 export default defineConfig({
   build: {
     lib: {
-      entry: resolve(__dirname, 'js/index.js'),
+      entry: resolve(__dirname, 'src/index.js'),
       name: 'ResumableLivewire',
       formats: ['es', 'umd'],
       fileName: (format) => `resumable-livewire.${format}.js`
