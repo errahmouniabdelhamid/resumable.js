@@ -1,8 +1,47 @@
-# ResumableLivewire PHP Backend Handler
+# ResumableLivewire PHP Backend Handlers
 
-A Laravel/Livewire backend handler for processing chunked file uploads from the Livewire edition of resumable.js.
+Two approaches for processing chunked file uploads from the Livewire edition of resumable.js.
 
-## Features
+## Which Approach Should I Use?
+
+### 🎯 Trait Approach (Recommended for Most Cases)
+**Best for:** Simple, straightforward uploads with minimal code
+
+```php
+use App\Traits\HandlesResumableUploads;
+
+class FileUploader extends Component
+{
+    use WithFileUploads, HandlesResumableUploads;
+    public $upload;
+    
+    protected function onUploadComplete(string $filepath, string $originalFilename): void
+    {
+        // Your code here
+    }
+}
+```
+
+➡️ **[See Trait Documentation](TRAIT-USAGE.md)**
+
+### 🔧 Full Handler Approach
+**Best for:** Advanced scenarios requiring fine-grained control
+
+```php
+use App\Services\ResumableLivewire;
+
+public function updatedUpload()
+{
+    $handler = new ResumableLivewire('public');
+    $isComplete = $handler->handleChunk($this->upload, request()->only([...]));
+}
+```
+
+---
+
+## Full Handler Documentation
+
+### Features
 
 - ✅ Handles chunk uploads via Livewire's native file upload
 - ✅ Assembles chunks into final files
@@ -12,7 +51,7 @@ A Laravel/Livewire backend handler for processing chunked file uploads from the 
 - ✅ Debug logging support
 - ✅ Laravel Storage facade integration
 
-## Installation
+### Installation
 
 1. Copy `ResumableLivewire.php` to your Laravel project (e.g., `app/Services/`)
 
