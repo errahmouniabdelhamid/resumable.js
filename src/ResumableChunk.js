@@ -204,78 +204,115 @@ export default class ResumableChunk extends ResumableEventHandler {
     this.pendingRetry = false;
     this.fire('chunkProgress', this.message());
 
-    // Use Livewire's upload function
-    if (this.livewireComponent) {
-      ResumableHelpers.printDebugHigh(
-        this.debugVerbosityLevel,
-        'Using Livewire upload for ResumableChunk...',
-        this
-      );
+    // Validate Livewire component
+    if (!this.livewireComponent) {
+      const errorMsg = `No Livewire component provided for resumable upload.
+      
+Configure it in your Resumable initialization:
+  const resumable = new Resumable({
+    livewireComponent: @this,  // or $wire
+    livewireProperty: 'upload',
+    ...
+  });
 
-      // Store the upload promise
-      this.uploadPromise = {
-        isPending: true,
-        isSuccess: false,
-        cancel: null
-      };
-
-      try {
-        // Use Livewire's $wire.upload() method
-        const uploadResult = this.livewireComponent.upload(
-          this.livewireProperty,
-          chunkFile,
-          (result) => {
-            // Success callback
-            ResumableHelpers.printDebugHigh(
-              this.debugVerbosityLevel,
-              'Livewire upload success for ResumableChunk.',
-              this
-            );
-            this.uploadPromise.isPending = false;
-            this.uploadPromise.isSuccess = true;
-            this.loaded = this.endByte - this.startByte;
-            this.fire('chunkSuccess', result);
-          },
-          (error) => {
-            // Error callback
-            ResumableHelpers.printDebugHigh(
-              this.debugVerbosityLevel,
-              'Livewire upload error for ResumableChunk.',
-              this,
-              error
-            );
-            this.uploadPromise.isPending = false;
-            this.uploadPromise.isSuccess = false;
-            this.handleUploadError(error);
-          },
-          (event) => {
-            // Progress callback
-            if (event.detail && event.detail.progress !== undefined) {
-              const progress = event.detail.progress;
-              this.loaded = Math.floor((this.endByte - this.startByte) * progress / 100);
-              
-              if (Date.now() - this.lastProgressCallback.getTime() > this.throttleProgressCallbacks * 1000) {
-                this.fire('chunkProgress', this.message());
-                this.lastProgressCallback = new Date();
-              }
-            }
-          }
-        );
-
-        // Store cancel function if available
-        if (uploadResult && uploadResult.cancel) {
-          this.uploadPromise.cancel = uploadResult.cancel;
-        }
-      } catch (error) {
-        const errorMsg = `Error initiating Livewire upload for chunk ${this.offset + 1}/${this.fileObj.chunks.length} of file "${this.fileObj.fileName}": ${error.message}`;
-        console.error(errorMsg, error);
-        this.handleUploadError(error);
-      }
-    } else {
-      // Fallback: If no Livewire component is provided, show an error
-      const errorMsg = `No Livewire component provided for chunk upload (file: ${this.fileObj.fileName}, chunk: ${this.offset + 1}/${this.fileObj.chunks.length}). Please set livewireComponent in Resumable options using the @this or $wire reference from your Livewire component.`;
+Current file: "${this.fileObj.fileName}" (chunk ${this.offset + 1}/${this.fileObj.chunks.length})`;
       console.error(errorMsg);
       this.fire('chunkError', errorMsg);
+      return;
+    }
+
+    // Validate Livewire upload method exists
+    if (typeof this.livewireComponent.upload !== 'function') {
+      const errorMsg = `Livewire component doesn't have an 'upload()' method.
+
+Make sure you're passing a valid Livewire component reference (@this or $wire).
+The component must use the WithFileUploads trait.
+
+Example:
+  use Livewire\\WithFileUploads;
+  
+  class MyComponent extends Component {
+    use WithFileUploads;
+    public $upload;
+  }
+
+Current file: "${this.fileObj.fileName}" (chunk ${this.offset + 1}/${this.fileObj.chunks.length})`;
+      console.error(errorMsg);
+      this.fire('chunkError', errorMsg);
+      return;
+    }
+
+    ResumableHelpers.printDebugHigh(
+      this.debugVerbosityLevel,
+      'Using Livewire upload for ResumableChunk...',
+      this
+    );
+
+    // Store the upload promise
+    this.uploadPromise = {
+      isPending: true,
+      isSuccess: false,
+      cancel: null
+    };
+
+    try {
+      // Use Livewire's $wire.upload() method
+      const uploadResult = this.livewireComponent.upload(
+        this.livewireProperty,
+        chunkFile,
+        (result) => {
+          // Success callback
+          ResumableHelpers.printDebugHigh(
+            this.debugVerbosityLevel,
+            'Livewire upload success for ResumableChunk.',
+            this
+          );
+          this.uploadPromise.isPending = false;
+          this.uploadPromise.isSuccess = true;
+          this.loaded = this.endByte - this.startByte;
+          this.fire('chunkSuccess', result);
+        },
+        (error) => {
+          // Error callback
+          ResumableHelpers.printDebugHigh(
+            this.debugVerbosityLevel,
+            'Livewire upload error for ResumableChunk.',
+            this,
+            error
+          );
+          this.uploadPromise.isPending = false;
+          this.uploadPromise.isSuccess = false;
+          this.handleUploadError(error);
+        },
+        (event) => {
+          // Progress callback
+          if (event.detail && event.detail.progress !== undefined) {
+            const progress = event.detail.progress;
+            this.loaded = Math.floor((this.endByte - this.startByte) * progress / 100);
+            
+            if (Date.now() - this.lastProgressCallback.getTime() > this.throttleProgressCallbacks * 1000) {
+              this.fire('chunkProgress', this.message());
+              this.lastProgressCallback = new Date();
+            }
+          }
+        }
+      );
+
+      // Store cancel function if available
+      if (uploadResult && uploadResult.cancel) {
+        this.uploadPromise.cancel = uploadResult.cancel;
+      }
+    } catch (error) {
+      const errorMsg = `Failed to initiate Livewire upload for file "${this.fileObj.fileName}" (chunk ${this.offset + 1}/${this.fileObj.chunks.length}): ${error.message || error}
+
+Check that:
+1. Your Livewire component has the WithFileUploads trait
+2. The property '${this.livewireProperty}' exists and is public
+3. Your component is properly initialized
+
+Error details: ${error.stack || error}`;
+      console.error(errorMsg);
+      this.handleUploadError(error);
     }
 
     ResumableHelpers.printDebugLow(this.debugVerbosityLevel, 'Started upload of ResumableChunk.', this);

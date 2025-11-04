@@ -57,9 +57,9 @@ trait HandlesResumableUploads
     protected array $completedUploads = [];
 
     /**
-     * Track cancelled uploads (identifier => true)
+     * Cache storage disk instance
      */
-    protected array $cancelledUploads = [];
+    private $storageDiskCache = null;
 
     /**
      * Check if a chunk exists (for resumability / chunk testing)
@@ -74,19 +74,14 @@ trait HandlesResumableUploads
      */
     public function checkChunk(string $identifier, string $filename, int $chunkNumber): bool
     {
-        // Check if upload was cancelled
-        if (isset($this->cancelledUploads[$identifier])) {
-            return false;
-        }
-
         return $this->chunkExists($identifier, $filename, $chunkNumber);
     }
 
     /**
      * Cancel an upload and clean up its chunks
      * 
-     * This method handles user cancellation of uploads. It marks the upload as cancelled
-     * and cleans up any existing chunks.
+     * This method handles user cancellation of uploads. It deletes the entire
+     * chunk directory for the upload, effectively removing all traces of it.
      * 
      * @param string $identifier Unique upload identifier
      * @param string $filename Original filename
@@ -94,27 +89,17 @@ trait HandlesResumableUploads
      */
     public function cancelUpload(string $identifier, string $filename): void
     {
-        // Mark as cancelled
-        $this->cancelledUploads[$identifier] = true;
-
-        // Get total chunks if we can determine it
         $chunkDir = $this->getChunkDirectory($identifier);
         
         try {
-            // Get all chunk files for this upload
-            $files = Storage::disk($this->resumableDisk)->files($chunkDir);
-            
-            // Delete each chunk
-            foreach ($files as $file) {
-                Storage::disk($this->resumableDisk)->delete($file);
+            // Delete the entire directory at once (more efficient than individual files)
+            if ($this->disk()->exists($chunkDir)) {
+                $this->disk()->deleteDirectory($chunkDir);
             }
-            
-            // Delete the directory
-            Storage::disk($this->resumableDisk)->deleteDirectory($chunkDir);
-            
         } catch (\Exception $e) {
             Log::error('Error cancelling upload', [
                 'identifier' => $identifier,
+                'filename' => $filename,
                 'error' => $e->getMessage(),
             ]);
         }
@@ -146,18 +131,20 @@ trait HandlesResumableUploads
             return;
         }
 
-        // Check if upload was cancelled
         $identifier = $metadata['resumableIdentifier'];
-        if (isset($this->cancelledUploads[$identifier])) {
-            $this->upload = null;
-            $this->dispatch('upload:cancelled', [
-                'identifier' => $identifier,
-                'message' => 'Upload was cancelled',
-            ]);
-            return;
-        }
+        $originalFilename = $metadata['resumableFilename'];
+        $chunkNumber = (int) $metadata['resumableChunkNumber'];
 
         try {
+            // Validate file size before proceeding
+            $totalSize = (int) ($metadata['resumableTotalSize'] ?? 0);
+            if ($totalSize > 0 && $this->maxUploadSize() && $totalSize > $this->maxUploadSize()) {
+                throw new \RuntimeException(
+                    "File '{$originalFilename}' exceeds maximum allowed size of " . 
+                    $this->formatBytes($this->maxUploadSize())
+                );
+            }
+
             // Save the chunk
             $this->saveChunk($this->upload, $metadata);
 
@@ -167,14 +154,14 @@ trait HandlesResumableUploads
                 
                 if ($finalPath) {
                     $this->completedUploads[] = [
-                        'original' => $metadata['filename'],
+                        'original' => $originalFilename,
                         'path' => $finalPath,
                         'uploaded_at' => now(),
                     ];
 
                     // Call the hook if defined
                     if (method_exists($this, 'onUploadComplete')) {
-                        $this->onUploadComplete($finalPath, $metadata['filename']);
+                        $this->onUploadComplete($finalPath, $originalFilename);
                     }
 
                     // Emit success event to JavaScript
@@ -189,7 +176,7 @@ trait HandlesResumableUploads
             $this->upload = null;
 
         } catch (\Exception $e) {
-            $this->handleUploadError($e, $metadata);
+            $this->handleUploadError($e, $metadata, $chunkNumber);
         }
     }
 
@@ -229,7 +216,7 @@ trait HandlesResumableUploads
     {
         $chunkPath = $this->getChunkPath($metadata);
         
-        Storage::disk($this->resumableDisk)->put(
+        $this->disk()->put(
             $chunkPath,
             $file->get()
         );
@@ -259,11 +246,60 @@ trait HandlesResumableUploads
     protected function chunkExists(string $identifier, string $filename, int $chunkNumber): bool
     {
         $chunkPath = $this->buildChunkPath($identifier, $filename, $chunkNumber);
-        return Storage::disk($this->resumableDisk)->exists($chunkPath);
+        return $this->disk()->exists($chunkPath);
     }
 
     /**
-     * Assemble all chunks into final file
+     * Get cached disk instance
+     */
+    protected function disk()
+    {
+        if ($this->storageDiskCache === null) {
+            $this->storageDiskCache = Storage::disk($this->resumableDisk);
+        }
+        return $this->storageDiskCache;
+    }
+
+    /**
+     * Get maximum allowed upload size (override in component to customize)
+     */
+    protected function maxUploadSize(): ?int
+    {
+        // Default to PHP's upload_max_filesize
+        return min(
+            $this->parseSize(ini_get('upload_max_filesize')),
+            $this->parseSize(ini_get('post_max_size'))
+        );
+    }
+
+    /**
+     * Parse size string (e.g., "10M", "2G") to bytes
+     */
+    protected function parseSize(string $size): int
+    {
+        $unit = strtoupper(substr($size, -1));
+        $value = (int) substr($size, 0, -1);
+        
+        return match($unit) {
+            'G' => $value * 1024 * 1024 * 1024,
+            'M' => $value * 1024 * 1024,
+            'K' => $value * 1024,
+            default => (int) $size,
+        };
+    }
+
+    /**
+     * Format bytes to human-readable string
+     */
+    protected function formatBytes(int $bytes): string
+    {
+        $units = ['B', 'KB', 'MB', 'GB'];
+        $factor = floor((strlen((string) $bytes) - 1) / 3);
+        return sprintf("%.2f %s", $bytes / pow(1024, $factor), $units[$factor]);
+    }
+
+    /**
+     * Assemble all chunks into final file using streaming for memory efficiency
      */
     protected function assembleChunks(array $metadata): ?string
     {
@@ -276,45 +312,84 @@ trait HandlesResumableUploads
         $finalPath = $this->resumableUploadFolder . '/' . $safeFilename;
 
         // Check if file already exists
-        if (Storage::disk($this->resumableDisk)->exists($finalPath)) {
+        if ($this->disk()->exists($finalPath)) {
             return null;
         }
 
-        // Concatenate all chunks
-        $finalContent = '';
-        for ($i = 1; $i <= $totalChunks; $i++) {
-            $chunkPath = $this->buildChunkPath($identifier, $filename, $i);
-            $finalContent .= Storage::disk($this->resumableDisk)->get($chunkPath);
+        // Use streaming to avoid loading entire file into memory
+        $disk = $this->disk();
+        $tempPath = $finalPath . '.tmp';
+        
+        try {
+            // Open a write stream for the final file
+            $writeStream = $disk->writeStream($tempPath, '');
+            
+            if (!$writeStream) {
+                throw new \RuntimeException("Failed to open write stream for '{$finalPath}'");
+            }
+
+            // Stream each chunk directly to the final file
+            for ($i = 1; $i <= $totalChunks; $i++) {
+                $chunkPath = $this->buildChunkPath($identifier, $filename, $i);
+                
+                if (!$disk->exists($chunkPath)) {
+                    fclose($writeStream);
+                    $disk->delete($tempPath);
+                    throw new \RuntimeException(
+                        "Chunk {$i} missing for file '{$filename}' (identifier: {$identifier})"
+                    );
+                }
+                
+                $readStream = $disk->readStream($chunkPath);
+                if (!$readStream) {
+                    fclose($writeStream);
+                    $disk->delete($tempPath);
+                    throw new \RuntimeException(
+                        "Failed to read chunk {$i} for file '{$filename}' (identifier: {$identifier})"
+                    );
+                }
+                
+                stream_copy_to_stream($readStream, $writeStream);
+                fclose($readStream);
+            }
+            
+            fclose($writeStream);
+            
+            // Move temp file to final location
+            $disk->move($tempPath, $finalPath);
+            
+        } catch (\Exception $e) {
+            // Clean up temp file if it exists
+            if ($disk->exists($tempPath)) {
+                $disk->delete($tempPath);
+            }
+            throw $e;
         }
 
-        // Save final file
-        Storage::disk($this->resumableDisk)->put($finalPath, $finalContent);
-
-        // Clean up chunks
-        $this->cleanupChunks($identifier, $filename, $totalChunks);
+        // Clean up chunks - delete entire directory at once
+        $this->cleanupChunks($identifier);
 
         return $finalPath;
     }
 
     /**
-     * Clean up chunk files
+     * Clean up chunk files by deleting entire directory (more efficient)
      */
-    protected function cleanupChunks(string $identifier, string $filename, int $totalChunks): void
+    protected function cleanupChunks(string $identifier): void
     {
-        for ($i = 1; $i <= $totalChunks; $i++) {
-            $chunkPath = $this->buildChunkPath($identifier, $filename, $i);
-            
-            if (Storage::disk($this->resumableDisk)->exists($chunkPath)) {
-                Storage::disk($this->resumableDisk)->delete($chunkPath);
-            }
-        }
-
-        // Try to delete chunk directory
         $chunkDir = $this->getChunkDirectory($identifier);
+        
         try {
-            Storage::disk($this->resumableDisk)->deleteDirectory($chunkDir);
+            // Delete entire directory at once - much more efficient
+            if ($this->disk()->exists($chunkDir)) {
+                $this->disk()->deleteDirectory($chunkDir);
+            }
         } catch (\Exception $e) {
-            // Ignore if directory is not empty or can't be deleted
+            Log::warning('Failed to cleanup chunks', [
+                'identifier' => $identifier,
+                'directory' => $chunkDir,
+                'error' => $e->getMessage(),
+            ]);
         }
     }
 
@@ -375,21 +450,32 @@ trait HandlesResumableUploads
     }
 
     /**
-     * Handle upload errors
+     * Handle upload errors with better context
      */
-    protected function handleUploadError(\Exception $e, array $metadata): void
+    protected function handleUploadError(\Exception $e, array $metadata, int $chunkNumber = null): void
     {
+        $identifier = $metadata['resumableIdentifier'] ?? 'unknown';
+        $filename = $metadata['resumableFilename'] ?? 'unknown';
+        
+        $errorContext = [
+            'identifier' => $identifier,
+            'filename' => $filename,
+            'chunk' => $chunkNumber,
+            'error' => $e->getMessage(),
+        ];
+
         if (method_exists($this, 'onUploadError')) {
             $this->onUploadError($e);
         }
 
         $this->dispatch('upload:error', [
             'message' => $e->getMessage(),
+            'context' => $errorContext,
         ]);
 
-        Log::error('Resumable upload error', [
-            'error' => $e->getMessage(),
+        Log::error('Resumable upload error', array_merge($errorContext, [
             'metadata' => $metadata,
-        ]);
+            'trace' => $e->getTraceAsString(),
+        ]));
     }
 }

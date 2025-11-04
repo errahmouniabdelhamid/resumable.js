@@ -14,6 +14,15 @@ export class Resumable extends ResumableEventHandler {
     this.uncompletedFileCategories = [];
     this.validators = {};
     
+    // Store bound event handlers to prevent memory leaks
+    this._boundHandlers = new WeakMap();
+    this._dragHandlers = {
+      dragover: this.onDragOverEnter.bind(this),
+      dragenter: this.onDragOverEnter.bind(this),
+      dragleave: this.onDragLeave.bind(this),
+      drop: this.removeDragOverClassAndCallOnDrop.bind(this)
+    };
+    
     // Set default configuration
     this.clearInput = true;
     this.dragOverClass = 'dragover';
@@ -304,38 +313,25 @@ export class Resumable extends ResumableEventHandler {
       (file) => this.fire('fileProcessingFailed', file, 'duplicate', fileCategory),
     );
 
+    // Build Set of existing identifiers for O(1) lookup
+    const existingIdentifiers = new Set(
+      this.files[fileCategory].map(f => f.uniqueIdentifier)
+    );
+
     const validationResults = [];
+    const allowedTypes = this.fileTypes[fileCategory];
+    const hasTypeRestrictions = allowedTypes && allowedTypes.length > 0;
+
     for (const file of filesWithoutDuplicates) {
-      // Check if already added
-      if (this.files[fileCategory].some((addedFile) => addedFile.uniqueIdentifier === file.uniqueIdentifier)) {
+      // Check if already added - O(1) with Set
+      if (existingIdentifiers.has(file.uniqueIdentifier)) {
         this.fire('fileProcessingFailed', file, 'duplicate', fileCategory);
         ResumableHelpers.printDebugLow(this.debugVerbosityLevel, 'File validation failed because of "duplicate".', file);
         validationResults.push(false);
         continue;
       }
 
-      let fileType = file.type.toLowerCase();
-      let fileExtension = file.name.split('.').pop().toLowerCase();
-
-      if (this.fileTypes[fileCategory].length > 0) {
-        const fileTypeFound = this.fileTypes[fileCategory].some((type) => {
-          return fileExtension === type ||
-            type.includes('/') && (
-              type.includes('*') &&
-              fileType.substring(0, type.indexOf('*')) === type.substring(0, type.indexOf('*')) ||
-              fileType === type
-            );
-        });
-        if (!fileTypeFound) {
-          this.fire('fileProcessingFailed', file, 'fileType', fileCategory);
-          this.fileTypeErrorCallback(file);
-          ResumableHelpers.printDebugLow(this.debugVerbosityLevel, 'File validation failed because of "fileType".', file);
-          validationResults.push(false);
-          continue;
-        }
-      }
-
-      // Validate file size
+      // Validate file size early (fast check)
       if (this.minFileSize !== undefined && file.size < this.minFileSize) {
         this.fire('fileProcessingFailed', file, 'minFileSize', fileCategory);
         this.minFileSizeErrorCallback(file);
@@ -350,7 +346,31 @@ export class Resumable extends ResumableEventHandler {
         continue;
       }
 
-      // Custom validator
+      // Validate file type
+      if (hasTypeRestrictions) {
+        const fileType = file.type.toLowerCase();
+        const fileExtension = file.name.split('.').pop().toLowerCase();
+        
+        const fileTypeFound = allowedTypes.some((type) => {
+          return fileExtension === type ||
+            type.includes('/') && (
+              type.includes('*') &&
+              fileType.substring(0, type.indexOf('*')) === type.substring(0, type.indexOf('*')) ||
+              fileType === type
+            );
+        });
+        
+        if (!fileTypeFound) {
+          this.fire('fileProcessingFailed', file, 'fileType', fileCategory);
+          this.fileTypeErrorCallback(file);
+          ResumableHelpers.printDebugLow(this.debugVerbosityLevel, 'File validation failed because of "fileType".', file);
+          validationResults.push(false);
+          continue;
+        }
+      }
+
+      // Custom validator  
+      const fileExtension = file.name.split('.').pop().toLowerCase();
       if (fileExtension in this.validators && !await this.validators[fileExtension](file, fileCategory)) {
         this.fire('fileProcessingFailed', file, 'validation', fileCategory);
         this.fileValidationErrorCallback(file);
@@ -573,10 +593,11 @@ export class Resumable extends ResumableEventHandler {
         domNode.setAttribute('resumable-file-category', fileCategory);
       }
 
-      domNode.addEventListener('dragover', this.onDragOverEnter.bind(this), false);
-      domNode.addEventListener('dragenter', this.onDragOverEnter.bind(this), false);
-      domNode.addEventListener('dragleave', this.onDragLeave.bind(this), false);
-      domNode.addEventListener('drop', this.removeDragOverClassAndCallOnDrop.bind(this), false);
+      // Use pre-bound handlers to prevent memory leaks
+      domNode.addEventListener('dragover', this._dragHandlers.dragover, false);
+      domNode.addEventListener('dragenter', this._dragHandlers.dragenter, false);
+      domNode.addEventListener('dragleave', this._dragHandlers.dragleave, false);
+      domNode.addEventListener('drop', this._dragHandlers.drop, false);
     }
     ResumableHelpers.printDebugLow(this.debugVerbosityLevel, 'Assigned drop to DOM nodes.', domNodes);
   }
@@ -589,10 +610,11 @@ export class Resumable extends ResumableEventHandler {
     if (domNodes instanceof HTMLElement) domNodes = [domNodes];
 
     for (const domNode of domNodes) {
-      domNode.removeEventListener('dragover', this.onDragOverEnter.bind(this));
-      domNode.removeEventListener('dragenter', this.onDragOverEnter.bind(this));
-      domNode.removeEventListener('dragleave', this.onDragLeave.bind(this));
-      domNode.removeEventListener('drop', this.removeDragOverClassAndCallOnDrop.bind(this));
+      // Use pre-bound handlers for proper cleanup
+      domNode.removeEventListener('dragover', this._dragHandlers.dragover);
+      domNode.removeEventListener('dragenter', this._dragHandlers.dragenter);
+      domNode.removeEventListener('dragleave', this._dragHandlers.dragleave);
+      domNode.removeEventListener('drop', this._dragHandlers.drop);
     }
     ResumableHelpers.printDebugLow(this.debugVerbosityLevel, 'Unassigned drop from DOM nodes.', domNodes);
   }
